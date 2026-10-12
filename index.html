@@ -514,8 +514,8 @@ function scoreOf(P){
 function finish(P,won){P.done=true;P.won=won;P.pts=won?scoreOf(P):0}
 
 /* ================= ふたりで対戦 =================
-   自分の番には「マスを開ける」「答える」「パス」のどれか1つ。印はいつでも（番は使わない）。
-   正解 +1、ちがう答え −1、爆弾を開ける −1。二人続けてパスすると問題文が出て、さらに二人続けてパスすると流れる */
+   1ターンは「マスを開ける」か「答える」のどちらか1つ（パスはなし。v5、ユーザーの指定）。印はいつでも（番は使わない）。
+   正解 +1、ちがう答え −1、爆弾を開ける −1 */
 const VS={RIGHT:1,WRONG:-1,BOOM:-1,ROUNDS:5};
 function vsNew(kind,lvl,seed,len="normal"){
   const V={kind,lvl,seed,len,names:kind==="cpu"?["あなた","コンピュータ"]:["あか","あお"],score:[0,0],round:0,rounds:VS.ROUNDS,
@@ -524,30 +524,23 @@ function vsNew(kind,lvl,seed,len="normal"){
 }
 function vsRound(V){
   const P=newPuzzle(V.list[V.round]);
-  P.lives=Infinity;P.turn=V.round%2;P.passes=0;P.winner=-1;P.log=[];P.pl=[0,0];V.P=P;
+  P.lives=Infinity;P.turn=V.round%2;P.winner=-1;P.log=[];P.pl=[0,0];V.P=P;
 }
 function vsLog(V,t){V.P.log.unshift(t)}
 function vsEndTurn(V){V.P.turn=1-V.P.turn}
 function vsOpen(V,i,flags){
   const P=V.P,t=P.turn;if(P.done)return null;
   const r=openCell(P,i,flags||P.flag);if(!r)return null;
-  P.passes=0;
+
   if(r==="boom"){V.score[t]+=VS.BOOM;P.pl[t]+=VS.BOOM;vsLog(V,`${V.names[t]}：「${CELLS[i].kana}」を開けて爆発${P.mc[i]>1?`（爆弾${P.mc[i]}個）`:""}（−1）`)}
   else vsLog(V,`${V.names[t]}：「${CELLS[i].kana}」を開けた`+(P.wave.size>1?`（0なので ${P.wave.size} マス開いた）`:""));
   vsEndTurn(V);return r;
 }
 function vsAnswer(V,text,flags){
   const P=V.P,t=P.turn;if(P.done)return null;const a=fold(text);if(!a)return null;
-  P.passes=0;
+
   if(a===P.pz.f){V.score[t]+=VS.RIGHT;P.pl[t]+=VS.RIGHT;P.done=true;P.winner=t;vsLog(V,`${V.names[t]}：「${text}」で正解（+${VS.RIGHT}）`);return "right"}
   V.score[t]+=VS.WRONG;P.pl[t]+=VS.WRONG;vsLog(V,`${V.names[t]}：「${text}」はちがう（−1）`);if(prefixHint(P,flags||P.flag))vsLog(V,`答えの最初の${P.prefix}文字を出した`);vsEndTurn(V);return "wrong";
-}
-function vsPass(V){
-  const P=V.P,t=P.turn;if(P.done)return null;
-  P.passes++;vsLog(V,`${V.names[t]}：パス`);
-  if(P.passes>=2&&!P.hint){P.hint=true;P.passes=0;vsLog(V,"二人ともパスしたので、問題文を出した");vsEndTurn(V);return "hint"}
-  if(P.passes>=2&&P.hint){P.done=true;P.winner=-1;vsLog(V,"二人ともパス。この問題は流れた");return "draw"}
-  vsEndTurn(V);return "pass";
 }
 function vsNext(V){
   const P=V.P;V.results.push({w:P.pz.w,winner:P.winner,pl:P.pl.slice()});
@@ -568,22 +561,22 @@ function cpuDecide(V,rnd){
   let sure=P.boom.size;for(const i of a.unknown)if(a.prob.get(i)>1-1e-9)sure++;
   // つよい: 爆弾の文字が半分以上はっきりして、合う言葉が1つなら答える
   if(lvl===2&&cands.length===1&&sure>=Math.ceil(P.pz.f.length/2))return {type:"answer",text:cands[0].w};
-  // 問題文が出たあとは、思いあたる言葉で勝負する（はずれることもある）
-  if(P.hint&&cands.length&&cands.length<=[2,3,3][lvl])return {type:"answer",text:cands[Math.floor(rnd()*cands.length)].w};
+  // パスはできないので、開けるのが危ないとき・開けるマスがないときは、思いあたる言葉で勝負する（はずれることもある）
   let minp=Infinity;for(const i of a.unknown)if(!P.flag.has(i))minp=Math.min(minp,a.prob.get(i));
-  const limit=[0.3,0.2,0.2][lvl];
-  if(minp>limit)return {type:"pass"};
+  const guess=()=>({type:"answer",text:cands[Math.floor(rnd()*cands.length)].w});
+  if(minp===Infinity)return guess();
+  if(minp>[0.3,0.2,0.2][lvl]&&cands.length<=[2,3,3][lvl])return guess();
   let best=null,bs=-Infinity;
   for(const i of a.unknown){if(P.flag.has(i))continue;const p=a.prob.get(i);if(p>minp+1e-9+(lvl===0?0.15:0))continue;
     let u=0;if(lvl>0)for(const j of NB[i])if(!P.open.has(j)&&!P.boom.has(j)){const q=a.prob.get(j)||0;u+=q*(1-q)}
     u+=rnd()*(lvl===0?1:1e-6);if(u>bs){bs=u;best=i}}
-  return best===null?{type:"pass"}:{type:"open",i:best};
+  return best===null?guess():{type:"open",i:best};
 }
 function consistentWith(P,q){const mc=new Int8Array(CELLS.length);for(const k of q.f)mc[BYKANA[k]]++;
   for(const b of P.boom)if(mc[b]!==P.mc[b])return false;
   for(const i of P.open){if(mc[i])return false;let c=0;for(const j of NB[i])c+=mc[j];if(c!==P.cnt[i])return false}
   return true}
-function cpuAct(V,rnd){const d=cpuDecide(V,rnd);if(d.type==="answer")return vsAnswer(V,d.text);if(d.type==="open")return vsOpen(V,d.i);return vsPass(V)}
+function cpuAct(V,rnd){const d=cpuDecide(V,rnd);if(d.type==="answer")return vsAnswer(V,d.text);return vsOpen(V,d.i)}
 
 /* ================= 読み（bot と確かめ用） =================
    開いた数字・爆発したマス（爆弾の個数も見える）・爆弾の総数だけから、各マスに爆弾がある確からしさを出す。
@@ -751,7 +744,7 @@ function cpuTurn(){
   if(!isCpuTurn())return;const V=G.V,P=V.P;
   const r=cpuAct(V,Math.random);afterVs(r);
 }
-// 番を待つとき（コンピュータの番・オンラインで相手の番）は、開ける・答える・パスを押せない
+// 番を待つとき（コンピュータの番・オンラインで相手の番）は、開ける・答えるを押せない
 const isRemoteTurn=()=>!!(G&&G.net&&G.V&&!G.V.over&&!G.V.P.done&&G.V.P.turn!==G.net.seat);
 const isWaitTurn=()=>isCpuTurn()||isRemoteTurn();
 function afterVs(r,mine=true){
@@ -760,9 +753,6 @@ function afterVs(r,mine=true){
   else if(r==="safe"){UI.pop=P.last;UI.wave=P.wave;sfx(P.wave&&P.wave.size>1?"wave":"open");setMsg("","")}
   else if(r==="right"){sfx("right");setMsg("","")}
   else if(r==="wrong"){sfx("wrong");setMsg("ちがう答え −1"+(P.prefixNew?"。答えの最初の文字を出した":""),"bad")}
-  else if(r==="hint"){sfx("hint");setMsg("二人ともパスしたので、問題文を出した","")}
-  else if(r==="draw"){sfx("wrong");setMsg("","")}
-  else if(r==="pass"){sfx("pick");setMsg("","")}
   if(r&&r!=="right"&&r!=="draw"&&V.kind==="hot")UI.ans="";
   if(r==="right"&&mine)UI.ans="";
   if(G.net&&G.net.role==="host")netSync(r);
@@ -781,7 +771,6 @@ function onVsAnswer(){
   if(G.net&&G.net.role==="guest"){netSend({t:"act",a:"answer",text,flags:[...V.P.flag]});UI.sent=true;render();return}
   const r=vsAnswer(V,text);if(r==="wrong")UI.bad=true;afterVs(r);UI.bad=false;
 }
-function onVsPass(){if(isWaitTurn())return;if(G.net&&G.net.role==="guest"){netSend({t:"act",a:"pass"});UI.sent=true;render();return}afterVs(vsPass(G.V))}
 function onVsNext(){
   if(G.net&&G.net.role==="guest"){netSend({t:"next"});UI.sent=true;render();return}
   vsNext(G.V);if(G.V.over)finishVs();resetUI();if(G.net)netSync("next");render();window.scrollTo({top:0});
@@ -806,13 +795,12 @@ function vsHTML(){
   ${scoreBoard(V)}
   <div class="clue"><span class="cat">${esc(pz.cat)}</span><span class="len">爆弾 <b class="num">${pz.f.length}</b> こ（${pz.f.length}文字）</span></div>
   ${P.hint||P.done?`<div class="hintq">${esc(pz.q)}</div>`:""}${P.prefix&&!P.done?prefixHTML(P):""}`;
-  if(!P.done)h+=`<div class="turnbar p${t}" role="status">${cpu?waitText:`<b>${esc(V.names[t])}の番</b>${G.net?"（あなた）":""}　開ける・答える・パス から1つ`}</div>`;
+  if(!P.done)h+=`<div class="turnbar p${t}" role="status">${cpu?waitText:`<b>${esc(V.names[t])}の番</b>${G.net?"（あなた）":""}　マスを開けるか、答えるか（どちらかで1ターン）`}</div>`;
   h+=`<div class="frame p${P.done?"x":t}"><div class="grid${isCpuTurn()?" wait":""}" id="grid">${cells}</div></div>`;
   if(!P.done){
     h+=`<div class="tools">
       <div class="mode" role="group" aria-label="押したときの動き"><button id="tOpen" class="${UI.tool==="open"?"on":""}">開ける</button><button id="tFlag" class="${UI.tool==="flag"?"on":""}">印をつける</button></div>
       <span class="note">${G.net?"印は自分にだけ見える。番を使わない":"印は番を使わない"}</span><span class="sp"></span>
-      <button class="btn small" id="bPass" ${cpu?"disabled":""}>パス</button>
     </div>
     <div class="msg ${UI.msgKind}">${esc(UI.msg)}</div>
     <div class="answer">
@@ -853,7 +841,7 @@ function titleHTML(){
   <div class="howto">
     <div><i>一</i><span>爆弾の数は答えの文字数と同じ。濁点や小さい字は、もとの字に埋まっている（「じゃがいも」なら し・や・か・い・も）。のばす音「ー」も1文字（表の左下のマス）。</span></div>
     <div><i>二</i><span>同じ文字が2回あれば、そのマスに爆弾が2個（「ももたろう」なら「も」に2個）。文字を開けると、まわり8マスの爆弾の数が出る。0なら、まわりも自動で開く。</span></div>
-    <div><i>三</i><span>ふたりで対戦: 自分の番に「開ける」「答える」「パス」から1つ。正解 +1、ちがう答えと爆弾は −1。5問で多いほうの勝ち。</span></div>
+    <div><i>三</i><span>ふたりで対戦: 1ターンに「マスを開ける」か「答える」のどちらか1つ（パスはなし）。正解 +1、ちがう答えと爆弾は −1。5問で多いほうの勝ち。</span></div>
   </div>
   <div class="lenpick">
     <span class="note">問題の長さ</span>
@@ -959,7 +947,7 @@ function bind(){
   on("bDaily",startDaily);on("bFree",startFree);on("bFree2",startFree);on("bSound",toggleSound);
   on("bHot",()=>startVs("hot",0));on("bCpu0",()=>startVs("cpu",0));on("bCpu1",()=>startVs("cpu",1));on("bCpu2",()=>startVs("cpu",2));
   const setLen=l=>{UI.len=l;store.set("gojuon-len",l);render()};on("lenN",()=>setLen("normal"));on("lenL",()=>setLen("long"));
-  on("bPass",onVsPass);on("bVsNext",onVsNext);on("bVsAgain",()=>{if(G.net)netStart();else startVs(G.V.kind,G.V.lvl)});
+  on("bVsNext",onVsNext);on("bVsAgain",()=>{if(G.net)netStart();else startVs(G.V.kind,G.V.lvl)});
   on("bNetHost",netHost);on("bNetJoin",netJoin);on("bNetAccept",netAcceptReply);on("bNetReply",netMakeReply);on("bNetStart",netStart);
   const nd=$("netDraft");if(nd)nd.oninput=()=>{if(NET)NET.draft=nd.value};
   document.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>{const el=$(b.dataset.copy);if(!el)return;
@@ -1080,7 +1068,7 @@ function pubState(V,ev){
   return {t:"state",ev,round:V.round,rounds:V.rounds,score:V.score,names:V.names,len:V.len,over:V.over,
     results:V.results.map(r=>({w:r.w,winner:r.winner,pl:r.pl})),
     P:{cat:P.pz.cat,n:P.pz.f.length,q:P.hint||P.done?P.pz.q:null,open:[...P.open].map(i=>[i,P.cnt[i]]),boom:[...P.boom].map(i=>[i,P.mc[i]]),
-      turn:P.turn,passes:P.passes,hint:P.hint,done:P.done,winner:P.winner,w:P.done?P.pz.w:null,
+      turn:P.turn,hint:P.hint,done:P.done,winner:P.winner,w:P.done?P.pz.w:null,
       reveal:P.done?[...P.mines].map(i=>[i,P.mc[i]]):[],log:P.log.slice(0,12),pl:P.pl,prefix:P.prefix||0,
       prefixChars:chars.slice(0,P.prefix||0),prefixTotal:chars.length,prefixNew:!!P.prefixNew,last:P.last,
       wave:ev&&ev.kind==="safe"&&P.wave?[...P.wave]:null}};
@@ -1095,7 +1083,6 @@ function hostOnMsg(m){
   let r=null;
   if(m.a==="open"&&Number.isInteger(m.i)&&m.i>=0&&m.i<CELLS.length)r=vsOpen(V,m.i,flags);
   else if(m.a==="answer"&&typeof m.text==="string"&&m.text.length<=40)r=vsAnswer(V,m.text,flags);
-  else if(m.a==="pass")r=vsPass(V);
   if(!r){netSync("sync");return}
   afterVs(r,false);
 }
@@ -1108,7 +1095,7 @@ function guestOnMsg(m){
   const p=m.P,mc=new Int8Array(CELLS.length),cnt=new Array(CELLS.length).fill(0);
   for(const [i,c] of p.open)cnt[i]=c;for(const [i,c] of p.boom)mc[i]=c;for(const [i,c] of p.reveal)mc[i]=c;
   const P={pz:{cat:p.cat,q:p.q||"",w:p.w||"",f:{length:p.n}},open:new Set(p.open.map(x=>x[0])),cnt,boom:new Set(p.boom.map(x=>x[0])),mc,
-    mines:new Set(p.reveal.map(x=>x[0])),flag:flags,turn:p.turn,passes:p.passes,hint:p.hint,done:p.done,winner:p.winner,log:p.log,pl:p.pl,
+    mines:new Set(p.reveal.map(x=>x[0])),flag:flags,turn:p.turn,hint:p.hint,done:p.done,winner:p.winner,log:p.log,pl:p.pl,
     prefix:p.prefix,prefixChars:p.prefixChars,prefixTotal:p.prefixTotal,prefixNew:p.prefixNew,last:p.last,wave:p.wave?new Map(p.wave):null};
   for(const i of [...flags.keys()])if(P.open.has(i)||P.boom.has(i))flags.delete(i);
   const V={kind:"online",names:m.names,score:m.score,round:m.round,rounds:m.rounds,over:m.over,results:m.results,len:m.len,P};
@@ -1144,7 +1131,7 @@ function netHTML(){
   return h+note+"</div>";
 }
 window.DEV={
-  get G(){return G},get UI(){return UI},vsNew,vsOpen,vsAnswer,vsPass,vsNext,cpuDecide,cpuAct,VS,
+  get G(){return G},get UI(){return UI},vsNew,vsOpen,vsAnswer,vsNext,cpuDecide,cpuAct,VS,
   manualCpu(on=true){UI.manualCpu=on;clearTimeout(UI.cpuT)},cpuNow(){cpuTurn()},
   // コンピュータ同士の対戦: a/b は強さ（0〜2）。先手の有利と、強さの差を測る
   vsSims(n=40,a=1,b=1,len="normal"){const out={n,win:[0,0],draw:0,pts:[0,0],turns:0,flowed:0,rightFirst:0,booms:0,wrongs:0};
